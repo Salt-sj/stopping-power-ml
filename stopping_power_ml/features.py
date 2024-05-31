@@ -49,6 +49,12 @@ class ProjectileFeaturizer(BaseFeaturizer):
         """Compute features for a projectile system"""
 
         raise NotImplementedError()
+    
+    def implementors(self):
+        return ['Logan Ward']
+
+    def citations(self):
+        return []
 
 
 class IonIonForce(ProjectileFeaturizer):
@@ -229,7 +235,6 @@ class ProjectileVelocity(ProjectileFeaturizer):
 
     def featurize(self, position, velocity):
         return [np.linalg.norm(velocity)]
-    
 
 class TimeOffset(ProjectileFeaturizer):
     """Compute the value of a feature at a different time
@@ -257,6 +262,12 @@ class TimeOffset(ProjectileFeaturizer):
     def feature_labels(self):
         return ['{} at t={:.2f}'.format(f, t) for t, f in itertools.product(self.offsets,
                                                                            self.featurizer.feature_labels())]
+
+    def implementors(self):
+        return ['Logan Ward']
+
+    def citations(self):
+        return []
 
 class TimeAverage(ProjectileFeaturizer):
     """Compute a weighted average of a feature over time
