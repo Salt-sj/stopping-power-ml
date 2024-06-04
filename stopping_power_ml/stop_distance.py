@@ -9,6 +9,9 @@ import numpy as np
 import tempfile
 import keras
 
+import functools
+print = functools.partial(print, flush=True)
+
 class StoppingDistanceComputer:
     """Utility tool used compute the stopping distance"""
     
@@ -52,7 +55,7 @@ class StoppingDistanceComputer:
         # Add it to the traj_int
         self.traj_int.model = model
         
-    def _make_ode_function(self, start_point, start_traj):
+    def _make_ode_function(self, start_point, start_traj, scaler = 1):
         """Make the function used to run the ODE
 
         Args:
@@ -62,17 +65,17 @@ class StoppingDistanceComputer:
 
         # Make the force calculator
         force_calc = self.traj_int.create_force_calculator_given_displacement(start_point, start_traj)
-
+        
         def output(t, y):
             # Get the velocity and displacement
             v, x = y
 
             # Compute the force
-            f = force_calc(x, v)
+            f = force_calc(x, v).item()*scaler
             return [-f / self.proj_mass, v]
         return output
     
-    def compute_stopping_distance(self, start_point, start_velocity, stop_velocity_mag=0.4, max_time=1e5, output=None, status=True):
+    def compute_stopping_distance(self, start_point, start_velocity, *,scaler = 1, stop_velocity_mag = 0.4, max_time = 1e5, output = None, status = True):
         """Compute the stopping distance of a projectile
         
         Args:
@@ -90,13 +93,13 @@ class StoppingDistanceComputer:
         start_time = perf_counter()
 
         # Make the force calculator
-        fun = self._make_ode_function(start_point, start_velocity)
+        fun = self._make_ode_function(start_point, start_velocity, scaler)
         
         # Compute the initial velocity
         v_init = np.linalg.norm(start_velocity)
         
         # Create the ODE solver
-        rk = RK45(fun, 0, [v_init, 0], max_time, max_step=self.max_step)
+        rk = RK45(fun, 0, [v_init, 0], max_time, max_step = self.max_step)
         
         # Iterate until velocity slows down enough
         i = 0
