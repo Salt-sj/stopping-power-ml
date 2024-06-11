@@ -55,7 +55,7 @@ class StoppingDistanceComputer:
         # Add it to the traj_int
         self.traj_int.model = model
         
-    def _make_ode_function(self, start_point, start_traj, scaler = 1):
+    def _make_ode_function(self, start_point, start_traj):
         """Make the function used to run the ODE
 
         Args:
@@ -71,11 +71,11 @@ class StoppingDistanceComputer:
             v, x = y
 
             # Compute the force
-            f = force_calc(x, v).item()*scaler
+            f = force_calc(x, v).item()
             return [-f / self.proj_mass, v]
         return output
     
-    def compute_stopping_distance(self, start_point, start_velocity, *,scaler = 1, stop_velocity_mag = 0.4, max_time = 1e5, output = None, status = True):
+    def compute_stopping_distance(self, start_point, start_velocity, *, stop_velocity_mag = 0.4, max_time = 1e5, output = None, status = True):
         """Compute the stopping distance of a projectile
         
         Args:
@@ -93,7 +93,7 @@ class StoppingDistanceComputer:
         start_time = perf_counter()
 
         # Make the force calculator
-        fun = self._make_ode_function(start_point, start_velocity, scaler)
+        fun = self._make_ode_function(start_point, start_velocity)
         
         # Compute the initial velocity
         v_init = np.linalg.norm(start_velocity)
