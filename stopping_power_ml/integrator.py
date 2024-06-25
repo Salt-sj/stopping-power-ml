@@ -252,7 +252,7 @@ class TrajectoryIntegrator:
         def output(disp, vel_mag):
             pos = start_point + disp * traj_dir
             x = self.featurizers.featurize(pos, vel_mag * traj_dir)
-            return self.model.predict(np.array([x]), verbose = 0)[0]
+            return self.model.predict(np.array([x]), verbose = 0)[0].item()
         return output
         
 
