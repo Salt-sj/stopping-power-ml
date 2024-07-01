@@ -249,9 +249,9 @@ class TrajectoryIntegrator:
         start_point = self.conv_strc.lattice.get_cartesian_coords(start_point)
         
         # Make the function
-        def output(disp, vel_mag):
+        def output(disp, vel_mag, variance = np.array([0, 0, 0])):
             pos = start_point + disp * traj_dir
-            x = self.featurizers.featurize(pos, vel_mag * traj_dir)
+            x = self.featurizers.featurize(pos + variance, vel_mag * traj_dir)
             return self.model.predict(np.array([x]), verbose = 0)[0].item()
         return output
         
