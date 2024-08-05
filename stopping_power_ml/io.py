@@ -9,6 +9,7 @@ from scipy.interpolate import RegularGridInterpolator
 import pandas as pd
 from glob import glob
 import sys
+import re
 
 
 def _expand_density(rho):
@@ -170,11 +171,15 @@ def load_qbox_data(path):
     :return: DataFrame"""
 
     qbox_data = qbox.read_qbox(path, slice(None))
-
+    
     # Get the file ID from path
-    try:
-        file_id = int(path[:-4].split("_")[-1])
-    except (IndexError, ValueError):
+    directory_name, file_name = os.path.split(path)
+
+    match = re.findall(r'\d+', file_name)
+    if match != []:
+        file_id = int(match[-1])
+        print(f"find multiple files in this directory: {directory_name}, filename: {file_name}, file_id: {file_id}")
+    else:
         file_id = 0
 
     return pd.DataFrame({
