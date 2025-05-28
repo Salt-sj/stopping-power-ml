@@ -54,7 +54,7 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
                     min_R = R
 
         if (min_vec is not None):
-            logging.info(f"The angle between the velocity direction, {vdir}, and the selected vector for minimum periodic distance, {min_R}, is {min_angle}. Coorespond primivitive cell lattice vector is {min_coeffs}")
+            logging.info(f"The angle between the velocity direction, {vdir}, and the selected vector for minimum periodic distance, {min_R}, is {min_angle} degree. Coorespond primivitive cell lattice vector is {min_coeffs}")
             return min_vec
         else:
             if (max_search < 60):
