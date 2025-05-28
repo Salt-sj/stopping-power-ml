@@ -1,0 +1,17 @@
+pymatgen
+pandas
+scikit-learn
+keras
+spglib
+ase
+mdf_forge
+matminer
+cvxopt
+jupyterlab
+tensorflow
+
+#parsl
+#python==3.6.8
+#jupyterlab<=1.13.1  # Last Py3.6 support
+#h5py==2.9.0
+#matplotlib==2.2.4
