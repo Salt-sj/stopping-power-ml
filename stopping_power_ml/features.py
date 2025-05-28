@@ -1,14 +1,44 @@
 """Functions related to computing features"""
-
 import abc
 import itertools
 from scipy.integrate import romb
-
 import numpy as np
 from matminer.featurizers.site import AGNIFingerprints
 from matminer.featurizers.base import BaseFeaturizer
 from pymatgen.analysis.ewald import EwaldSummation
 from pymatgen.io.ase import AseAtomsAdaptor
+from ase import Atoms
+import copy
+from stopping_power_ml.rc import *
+
+def insert_projectile(atoms, projectile_species, position):
+    """Add the projectile at a certain position into the primitive cell
+    :param projectile_species: str
+    :param position: [float]*3, projectile position in cartesian coordinates
+    :return: Structure, output of the cell"""
+
+    atoms.append(projectile_species, position, coords_are_cartesian = True)
+    return atoms
+
+def split_atoms_based_on_species(atoms):
+    """
+    split the ase atoms based on the species
+    """
+    original_cell = atoms.get_cell()
+    original_pbc = atoms.get_pbc()
+    unique_symbols = np.unique(atoms.get_chemical_symbols())
+
+    split_atoms = []
+
+    for symbol in unique_symbols:
+        species_indices = [atom.index for atom in atoms if atom.symbol == symbol]
+        species_atoms = atoms[species_indices]
+
+        split_atoms.append(Atoms(symbols=species_atoms.get_chemical_symbols(),
+                                      positions=species_atoms.get_positions(),
+                                      cell=original_cell,
+                                      pbc=original_pbc))
+    return split_atoms;
 
 
 class ProjectileFeaturizer(BaseFeaturizer):
@@ -18,13 +48,12 @@ class ProjectileFeaturizer(BaseFeaturizer):
 
     def __init__(self, simulation_cell, use_prim_cell=True):
         """
-
-        :param simulation_cell: ase.Atoms, simulation cell, with projectile as the last entry
+        :param simulation_cell: ase.Atoms, simulation cell
         :param use_prim_cell: bool, whether to use primitive cell in calculation
         """
 
         # Compute the primitive unit cell vectors (structure minus the projectile.
-        self.simulation_cell = AseAtomsAdaptor.get_structure(simulation_cell[:-1])
+        self.simulation_cell = AseAtomsAdaptor.get_structure(simulation_cell)
 
         self.use_prim_cell = use_prim_cell
         if use_prim_cell:
@@ -35,17 +64,12 @@ class ProjectileFeaturizer(BaseFeaturizer):
             self.prim_cell = self.simulation_cell.get_primitive_structure()
 
     def _insert_projectile(self, position):
-        """Add the projectile at a certain position into the primitive cell
-
-        :param position: [float]*3, projectile position in cartesian coordinates
-        :return: Structure, output of the cell"""
 
         x = self.prim_cell.copy() if self.use_prim_cell else self.simulation_cell.copy()
-        x.append('H', position, coords_are_cartesian=True)
-        return x
+        return insert_projectile(x, 'H', position)
 
     @abc.abstractmethod
-    def featurize(self, position, velocity):
+    def featurize(self, position, velocity, vdir = None):
         """Compute features for a projectile system"""
 
         raise NotImplementedError()
@@ -130,7 +154,6 @@ class LocalChargeDensity(ProjectileFeaturizer):
     def citations(self):
         return []
 
-
 class ProjectedAGNIFingerprints(ProjectileFeaturizer):
     """Compute the fingerprints of the local atomic environment using the AGNI method
 
@@ -146,7 +169,15 @@ class ProjectedAGNIFingerprints(ProjectileFeaturizer):
 
     def __init__(self, simulation_cell, etas, cutoff=16, **kwargs):
         super(ProjectedAGNIFingerprints, self).__init__(simulation_cell, **kwargs)
-        self.agni = AGNIFingerprints(directions=['x', 'y', 'z', None], etas=etas, cutoff=cutoff)
+        self.agni = AGNIFingerprints(directions=['x', 'y', 'z', None], etas = etas, cutoff = cutoff)
+        self.atoms_list = [AseAtomsAdaptor.get_structure(atom) for atom in split_atoms_based_on_species(simulation_cell)]
+        assert len(self.atoms_list) > 0, "has to have at least one atom in the cell"
+
+        for atom in self.atoms_list: 
+            logging.info("splitted atom")
+            print(atom.lattice)
+            for i, site in enumerate(atom.sites):
+                print(f"{site.specie} {atom.cart_coords[i][0]:0.8f} {atom.cart_coords[i][1]:0.8f} {atom.cart_coords[i][2]:0.8f}")
 
     @property
     def etas(self):
@@ -165,18 +196,24 @@ class ProjectedAGNIFingerprints(ProjectileFeaturizer):
         self.agni.cutoff = x
 
     def feature_labels(self):
-        return ['AGNI projected eta=%.2e' % x for x in self.agni.etas]
+        labels = []
+        for atom in self.atoms_list:
+            symbol = atom.sites[0].specie.symbol 
+            labels.extend([f'AGNI in {symbol} projected eta=%.2e' % x for x in self.agni.etas])
+        return labels
 
     def featurize(self, position, velocity):
         # Compute the AGNI fingerprints [i,j] where i is fingerprint, and j is direction
-        strc = self._insert_projectile(position)
-        fingerprints = self.agni.featurize(strc, -1).reshape((4, -1)).T
+        proj_fingerprints = []
+        for atom in self.atoms_list:
+            strc = insert_projectile(atom.copy(), 'H', position)
+            fingerprints = self.agni.featurize(strc, -1).reshape((4, -1)).T
 
-        # Project into direction of travel
-        proj_fingerprints = np.dot(
-            fingerprints[:, :-1],
-            velocity
-        ) / np.linalg.norm(velocity)
+            # Project into direction of travel
+            proj_fingerprints.extend(np.dot(
+                fingerprints[:, :-1],
+                velocity
+            ) / np.linalg.norm(velocity))
 
         return proj_fingerprints
 
@@ -226,15 +263,19 @@ class RepulsionFeatures(ProjectileFeaturizer):
 class ProjectileVelocity(ProjectileFeaturizer):
     """Compute the projectile velocity
     
-    Input: Position and velocity of projectile
+    Input: velocity of projectile. possibly take the direction of velocity if its magnitude is 0
     
     Parameters: None"""
 
     def feature_labels(self):
-        return ["velocity_mag", ]
+        return ["velocity_mag", 'velocity_dir_x', 'velocity_dir_y', 'velocity_dir_z']
 
-    def featurize(self, position, velocity):
-        return [np.linalg.norm(velocity)]
+    def featurize(self, position, velocity, vdir = None):
+        vmag = np.linalg.norm(velocity)
+        if vdir is None:
+            vdir = velocity/vmag
+
+        return [vmag, vdir[0], vdir[1], vdir[2]]
 
 class TimeOffset(ProjectileFeaturizer):
     """Compute the value of a feature at a different time
