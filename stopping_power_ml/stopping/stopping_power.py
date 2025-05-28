@@ -12,7 +12,7 @@ from itertools import product
 def calc_angle(a, b):
     return np.arccos(np.clip(np.dot(a, b)/(np.linalg.norm(a)*np.linalg.norm(b)), -1, 1))/np.pi*180
 
-def compute_min_perodic_vector(lattice, vdir, max_search = 30):
+def compute_min_perodic_vector(lattice, vdir, max_search = 10):
 
     if np.allclose(vdir, np.round(vdir), atol = 1e-6):
         # Use gcd if the vector has all integer elements
@@ -32,6 +32,7 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 30):
         min_proj_len = np.inf
         min_angle = np.inf
         min_R = None
+        min_coeffs = None
 
         for coeffs in product(range(-max_search, max_search), repeat = 3):
             if coeffs == (0, 0, 0):
@@ -46,15 +47,19 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 30):
             if (proj_len > 0) and (angle < 0.6):
                 if (proj_len < min_proj_len):
                     min_proj_len = proj_len
-                    min_vec = vdir_unit*np.array(coeffs) 
+                    min_coeffs = np.array(coeffs)
+                    min_vec = vdir_unit*min_coeffs
                     min_angle = angle
                     min_R = R
 
         if (min_vec is not None):
-            logging.info(f"The angle between the velocity direction, {vdir}, and the selected lattice vector for minimum periodic distance, {min_R}, is {min_angle}")
+            logging.info(f"The angle between the velocity direction, {vdir}, and the selected vector for minimum periodic distance, {min_R}, is {min_angle}. Coorespond primivitive cell lattice vector is {min_coeffs}")
             return min_vec
         else:
-            raise ValueError("No valid periodic lattice vector found.")
+            if (max_search < 60):
+                return compute_min_perodic_vector(lattice, vdir, max_search + 10)
+            else:
+                raise ValueError("No valid periodic lattice vector found.")
 
 class TrajectoryIntegrator:
     """Tool used to compute the stopping power along a certain trajectory"""
@@ -77,9 +82,9 @@ class TrajectoryIntegrator:
         # Compute the matrix that we will use to map lattice vectors in the conventional cell to ones in the primitive
         self.conv_to_prim = np.round(linalg.solve(self.prim_strc.lattice.matrix, self.conv_strc.lattice.matrix))
 
-        logging.info(f"Original simulation cell\n {self.simulation_cell}")
-        logging.info(f"Conventional unit cell\n {self.conv_strc}")
-        logging.info(f"Primitive cell\n {self.prim_strc}")
+        logging.info(f"Original simulation cell (bohr)\n {self.simulation_cell}")
+        logging.info(f"Conventional unit cell (bohr)\n {self.conv_strc}")
+        logging.info(f"Primitive cell (bohr)\n {self.prim_strc}")
         logging.info(f"Supercell to conventional unit cell conversion\n {self.input_to_conv}")
         logging.info(f"Conventional unit cell to primitive cell conversion\n {self.conv_to_prim}")
 
