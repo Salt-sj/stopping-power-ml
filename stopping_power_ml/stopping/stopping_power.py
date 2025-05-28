@@ -30,6 +30,8 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 30):
         vdir_unit = vdir/np.linalg.norm(vdir)
         min_vec = None
         min_proj_len = np.inf
+        min_angle = np.inf
+        min_R = None
 
         for coeffs in product(range(-max_search, max_search), repeat = 3):
             if coeffs == (0, 0, 0):
@@ -43,11 +45,13 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 30):
 
             if (proj_len > 0) and (angle < 0.6):
                 if (proj_len < min_proj_len):
-                    logging.info(f"search angle {angle} lattice vector {coeffs}")
                     min_proj_len = proj_len
-                    min_vec = R #np.array(coeffs) 
+                    min_vec = vdir_unit*np.array(coeffs) 
+                    min_angle = angle
+                    min_R = R
 
         if (min_vec is not None):
+            logging.info(f"The angle between the velocity direction, {vdir}, and the selected lattice vector for minimum periodic distance, {min_R}, is {min_angle}")
             return min_vec
         else:
             raise ValueError("No valid periodic lattice vector found.")
@@ -97,9 +101,7 @@ class TrajectoryIntegrator:
 
         traj = np.dot(self.prim_strc.lattice.matrix, min_vec)
 
-        logging.info(f"minimum periodic direction of the primitive cell is {min_vec}, where the original velocity direction is {prim_vector}. The angle between these two vector is {angle} degree")
-        logging.info(f"corresponding cartesian direction is {traj}, where the original velocity direction is {vdir}")
-        logging.info(f"traj direction {traj}")
+        logging.info(f"traj direction in Cartesian coordinate {traj} and length {np.linalg.norm(traj)} bohr")
 
         return traj
 
