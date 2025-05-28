@@ -27,6 +27,7 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
     
     # if the vector has irrational elements, approximately determine the shortest possible lattice vector
     else:
+        angle_tol = 0.6 # degree
         vdir_unit = vdir/np.linalg.norm(vdir)
         min_vec = None
         min_proj_len = np.inf
@@ -44,7 +45,7 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
             proj_len = np.dot(R, vdir_unit)
             angle = calc_angle(R, vdir_unit)
 
-            if (proj_len > 0) and (angle < 0.6):
+            if (proj_len > 0) and (angle < angle_tol):
                 if (proj_len < min_proj_len):
                     min_proj_len = proj_len
                     min_coeffs = np.array(coeffs)
@@ -59,7 +60,7 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
             if (max_search < 60):
                 return compute_min_perodic_vector(lattice, vdir, max_search + 10)
             else:
-                raise ValueError("No valid periodic lattice vector found.")
+                raise ValueError("No valid lattice vector found to be close to the velocity direction within {angle_tol} degree")
 
 class TrajectoryIntegrator:
     """Tool used to compute the stopping power along a certain trajectory"""
