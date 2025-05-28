@@ -1,87 +1,109 @@
 """Options relating to determining the stopping power over a path"""
 from pymatgen.core.structure import Structure
 
-from stopping_power_ml.util import move_projectile
-from math import gcd
+from stopping_power_ml.rc import *
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.io.ase import AseAtomsAdaptor
 from scipy import linalg
 from scipy.integrate import quad
 import numpy as np
+from itertools import product
 
+def calc_angle(a, b):
+    return np.arccos(np.clip(np.dot(a, b)/(np.linalg.norm(a)*np.linalg.norm(b)), -1, 1))/np.pi*180
+
+def compute_min_perodic_vector(lattice, vdir, max_search = 30):
+
+    if np.allclose(vdir, np.round(vdir), atol = 1e-6):
+        # Use gcd if the vector has all integer elements
+        vdir = np.round(vdir).astype(int)
+
+        # Determine the shortest-possible lattice vector
+        g = np.gcd(vdir[0], np.gcd(vdir[1], vdir[2]))
+        min_vec = [p / g for p in vdir]
+
+        # Compute the path length
+        return min_vec
+    
+    # if the vector has irrational elements, approximately determine the shortest possible lattice vector
+    else:
+        vdir_unit = vdir/np.linalg.norm(vdir)
+        min_vec = None
+        min_proj_len = np.inf
+
+        for coeffs in product(range(-max_search, max_search), repeat = 3):
+            if coeffs == (0, 0, 0):
+                continue
+            R = np.dot(lattice, np.array(coeffs))
+            if (np.linalg.norm(R) < 1e-6):
+                continue
+
+            proj_len = np.dot(R, vdir_unit)
+            angle = calc_angle(R, vdir_unit)
+
+            if (proj_len > 0) and (angle < 0.6):
+                if (proj_len < min_proj_len):
+                    logging.info(f"search angle {angle} lattice vector {coeffs}")
+                    min_proj_len = proj_len
+                    min_vec = R #np.array(coeffs) 
+
+        if (min_vec is not None):
+            return min_vec
+        else:
+            raise ValueError("No valid periodic lattice vector found.")
 
 class TrajectoryIntegrator:
     """Tool used to compute the stopping power along a certain trajectory"""
-    def __init__(self, atoms, model, featurizers):
+    def __init__(self, atoms):
         """Create the class
-
         :param atoms: ase.Atoms, crystal structure being studied (including particle as the last atom)
-        :param model: scikit-learn model, module used to predict stopping force
-        :param featurizers: BaseFeaturizer, tool used to generate inputs to model"""
+        """
 
         # Store the main details
         self.atoms = atoms
-        self.model = model
-        self.featurizers = featurizers
 
-        # Compute the primitive unit cell vectors (structure minus the projectile.
-        self.simulation_cell = AseAtomsAdaptor.get_structure(atoms[:-1])
+        # Compute the primitive unit cell vectors
+        self.simulation_cell = AseAtomsAdaptor.get_structure(atoms)
         spg = SpacegroupAnalyzer(self.simulation_cell)
         self.prim_strc = spg.find_primitive()
         self.conv_strc = spg.get_conventional_standard_structure()
 
+        self.input_to_conv = np.round(linalg.solve(self.conv_strc.lattice.matrix, self.simulation_cell.lattice.matrix))
+
         # Compute the matrix that we will use to map lattice vectors in the conventional cell to ones in the primitive
         self.conv_to_prim = np.round(linalg.solve(self.prim_strc.lattice.matrix, self.conv_strc.lattice.matrix))
 
-    def _compute_trajectory(self, lattice_vector):
-        """Given a lattice vector, compute the minimum path length needed to determine stopping power.
+        logging.info(f"Original simulation cell\n {self.simulation_cell}")
+        logging.info(f"Conventional unit cell\n {self.conv_strc}")
+        logging.info(f"Primitive cell\n {self.prim_strc}")
+        logging.info(f"Supercell to conventional unit cell conversion\n {self.input_to_conv}")
+        logging.info(f"Conventional unit cell to primitive cell conversion\n {self.conv_to_prim}")
 
-        The lattice vector should be for the conventional cell of the structure. The path will be determined using
+    def _compute_trajectory(self, vdir):
+        """Given a contravariant vector, compute the minimum path length needed to determine stopping power.
+
+        The contravariant vector should be for the conventional cell of the structure. The path will be determined using
         the primitive cell.
 
-        :param lattice_vector: [int], lattice vector
+        :param vdir: [int], velocity direction
         :return: ndarray, 3x1 array defining the shortest path the covers an entire path"""
 
-        # Map the conventional cell lattice vector to the primitive cell
-        prim_vector = np.dot(self.conv_to_prim, np.array(lattice_vector, dtype=int))
-        prim_vector = np.array(np.round(prim_vector), dtype=int)
+        # Map the contravariant vector of the conventional cell to that of the primitive cell
+        prim_vector = np.dot(self.conv_to_prim, np.array(vdir))
 
-        # Determine the shortest-possible vector
-        g = gcd(prim_vector[0], gcd(prim_vector[1], prim_vector[2]))
-        prim_vector = [p / g for p in prim_vector]
+        min_vec = compute_min_perodic_vector(self.prim_strc.lattice.matrix, prim_vector)
 
-        # Compute the path length
-        return np.dot(self.prim_strc.lattice.matrix, prim_vector)
+        angle = calc_angle(prim_vector, min_vec)
 
-    def _create_frame_generator(self, start_point, lattice_vector, velocity):
-        """Create a function that generates a snapshot of an projectile moving along a certain trajectory
+        traj = np.dot(self.prim_strc.lattice.matrix, min_vec)
 
-        The function takes a float between 0 and 1 as an argument. A value of 0 returns the projectile at the starting
-        point of the trajectory. A value of 1 returns the particle at the first point where the trajectory repeats.
-        Values between 0-1 are linearly spaced between the two.
+        logging.info(f"minimum periodic direction of the primitive cell is {min_vec}, where the original velocity direction is {prim_vector}. The angle between these two vector is {angle} degree")
+        logging.info(f"corresponding cartesian direction is {traj}, where the original velocity direction is {vdir}")
+        logging.info(f"traj direction {traj}")
 
-        :param start_point: [float], starting point in conventional cell fractional coordinates
-        :param lattice_vector: [int], directional of travel in conventional cell coordinates
-        :param velocity: [float], projectile velocity
-        :return: function that returns position as a function of time float->([float]*3, [float]*3)"""
+        return traj
 
-        # Get the trajectory vector
-        traj_vec = self._compute_trajectory(lattice_vector)
-
-        # Compute the start point in cartesian coordinates
-        start_point = np.dot(self.conv_strc.lattice.matrix, start_point)
-
-        # Compute the velocity vector
-        velocity_vec = velocity * np.array(traj_vec, float) / np.linalg.norm(traj_vec)
-
-        # Create the function
-        def output(x):
-            position = traj_vec * x + start_point
-            return position, velocity_vec
-
-        return output
-
-    def _find_near_hits(self, start_point, lattice_vector, threshold, estimate_extrema=False):
+    def _find_near_hits(self, start_pos, vector, threshold, estimate_extrema=False):
         """Determine the positions of near-hits along a trajectory.
 
         These positions are locations where there is a 'spike' in the force acting on the projectile, which cause
@@ -95,17 +117,16 @@ class TrajectoryIntegrator:
         The positions are returned in fractional displacement along a trajectory, where 0 is the starting point
         and 1 is the first point at which the trajectory starts to repeat (due to symmetry).
 
-        :param start_point: [float], starting point in conventional cell fractional coordinates
-        :param lattice_vector: [int], directional of travel in conventional cell coordinates
+        :param start_pos: [float], starting point in conventional cell fractional coordinates
+        :param traj: [float]*3, traj of the minimum periodic vector
         :param threshold: float, minimum distance at which
         :return: [float], positions of closest pass to atoms"""
 
         # Compute the displacement of this path
-        vector = self._compute_trajectory(lattice_vector)
         traj_length = np.linalg.norm(vector)
 
         # Convert the start point to Cartesian coordinates
-        start_point = self.conv_strc.lattice.get_cartesian_coords(start_point)
+        start_pos = self.conv_strc.lattice.get_cartesian_coords(start_pos)
 
         # Get the list of atoms that are likely to experience a 'near-hit'
 
@@ -119,7 +140,7 @@ class TrajectoryIntegrator:
         radius = np.sqrt((step_size / 2) ** 2 + threshold ** 2)
 
         #   Determine the points along the line where we will look for atoms
-        points = [start_point + x * vector for x in np.linspace(0, 1, n_spacings)]
+        points = [start_pos + x * vector for x in np.linspace(0, 1, n_spacings)]
 
         #    Look for atoms near those points
         sites = []
@@ -131,11 +152,11 @@ class TrajectoryIntegrator:
         traj_direction = vector / traj_length
         near_impact = []
         for site in sites:
-            from_line = (site.coords - start_point) - np.dot(site.coords - start_point, traj_direction) * traj_direction
+            from_line = (site.coords - start_pos) - np.dot(site.coords - start_pos, traj_direction) * traj_direction
             from_line = np.linalg.norm(from_line)
             if from_line < threshold:
                 # Determine the displacement at which the projectile is closest to this atom
-                position = np.dot(site.coords - start_point, traj_direction)
+                position = np.dot(site.coords - start_pos, traj_direction)
 
                 if estimate_extrema:
                     # Determine the expected positions of the maxima
@@ -146,7 +167,7 @@ class TrajectoryIntegrator:
                     #    between the projectile and atom. It works out that this means the
                     #    maximum force is +/-d/sqrt(2) from the position of closest transit, where
                     #    d is the distance between the projectile's path and this atom
-                    special_points = np.multiply([-1,1], from_line / np.sqrt(2)) + position
+                    special_points = np.multiply([-1, 1], from_line / np.sqrt(2)) + position
 
                     coordinates = [x / traj_length for x in special_points]
                 else:
@@ -162,83 +183,135 @@ class TrajectoryIntegrator:
                     if len(near_impact) == 0 or np.abs(np.subtract(near_impact, coordinate)).min() > 1e-6:
                         near_impact.append(coordinate)
         return sorted(set(near_impact))
+
+    def _create_frame_generator(self, start_pos, traj_vec, vmag):
+        """Create a function that generates a snapshot of an projectile moving along a certain trajectory
+
+        The function takes a float between 0 and 1 as an argument. A value of 0 returns the projectile at the starting
+        point of the trajectory. A value of 1 returns the particle at the first point where the trajectory repeats.
+        Values between 0-1 are linearly spaced between the two.
+
+        :param start_pos: [float], starting point in conventional cell fractional coordinates
+        :param traj_vec: [int], directional of travel in primitive cell coordinates
+        :param vmag: [float], projectile velocity
+        :return: function that returns position as a function of time float->([float]*3, [float]*3)"""
+
+        # Compute the start point in cartesian coordinates
+        start_pos = np.dot(self.conv_strc.lattice.matrix, start_pos)
+
+        # Compute the velocity vector
+        velocity_vec = vmag * np.array(traj_vec, float) / np.linalg.norm(traj_vec)
+
+        # Create the function
+        def output(x):
+            position = traj_vec * x + start_pos
+            return position, velocity_vec
+        return output
+
     
-    def _create_model_inputs(self, start_point, lattice_vector, velocity):
+    def _create_model_inputs(self, featurizers, start_pos, traj_vec, vmag):
         """Create a function that computes the inputs to the force model at a certain point along a trajectory
 
         As in `_create_frame_generator`, the function takes a float between 0 and 1 as an argument. A value of 0
         returns the inputs for the force model at the starting point of the trajectory. A value of 1 returns the inputs at the first
         point where the trajectory repeats. Values between 0-1 are linearly spaced between the two.
 
-        :param start_point: [float], starting point in conventional cell fractional coordinates
-        :param lattice_vector: [int], directional of travel in conventional cell coordinates
-        :param velocity: [float], projectile velocity
+        :param start_pos: [float], starting point in primitive cell fractional coordinates
+        :param traj_vec: [int], directional of travel in conventional cell coordinates
+        :param vmag: [float], projectile velocity
         :return: function float->float"""
 
-        generator = self._create_frame_generator(start_point, lattice_vector, velocity)
+        generator = self._create_frame_generator(start_pos, traj_vec, vmag)
 
         def output(x):
             # Get the structure
             frame = generator(x)
-
             # Get the inputs to the model
-            return self.featurizers.featurize(*frame)
+            return featurizers.featurize(*frame)
         return output
 
-    def _create_force_calculator(self, start_point, lattice_vector, velocity):
+    def _create_force_calculator(self, model, featurizers, start_pos, traj_vec, vmag):
         """Create a function that computes the force acting on a projectile at a certain point along a trajectory
 
         As in `_create_frame_generator`, the function takes a float between 0 and 1 as an argument. A value of 0
         returns the force at the starting point of the trajectory. A value of 1 returns the force at the first
         point where the trajectory repeats. Values between 0-1 are linearly spaced between the two.
 
-        :param start_point: [float], starting point in conventional cell fractional coordinates
-        :param lattice_vector: [int], directional of travel in conventional cell coordinates
-        :param velocity: [float], projectile velocity
+        :param start_pos: [float], starting point in conventional cell fractional coordinates
+        :param traj_vec: [int], directional of travel in conventional cell coordinates
+        :param vmag: [float], projectile velocity
         :return: function float->float"""
 
-        generator = self._create_model_inputs(start_point, lattice_vector, velocity)
+        generator = self._create_model_inputs(featurizers, start_pos, traj_vec, vmag)
 
         def output(x):
             # Evaluate the model
             inputs = generator(x)
-            res = self.model.predict(np.array([inputs]), verbose = 0)
+            res = model.predict(np.array([inputs]), verbose = 0)
             return res if res.shape == () else res[0]
         return output
 
-    def compute_stopping_power(self, start_point, lattice_vector, velocity, hit_threshold=2,
+    def _convert_coordinate(self, start_pos, vdir, coordinate):
+        """
+        unify the coordinate to the contravariant coordinate of the conventional unit cell
+        """
+        if (coordinate.lower() == 'cartesian'):
+            start_pos = self.conv_strc.lattice.get_fractional_coords(start_pos)
+            vdir = self.conv_strc.lattice.get_fractional_coords(vdir)
+            return start_pos, vdir
+
+        elif (coordinate.lower() == 'supercell'):
+            start_pos = self.simulation_cell.lattice.get_cartesian_coords(start_pos)
+            vdir = self.simulation_cell.lattice.get_cartesian_coords(vdir)
+            print('cartesian coordinate', start_pos)
+            return self._convert_coordinate(start_pos, vdir, 'cartesian')
+
+        elif (coordinate.lower() == 'conventional'):
+            return start_pos, vdir
+
+        else: 
+            raise ValueError("Invalid coordinate specified")
+
+
+    def compute_stopping_power(self, model, featurizers, start_pos, vdir, vmag, *, coordinate = 'conventional', hit_threshold=2,
                                max_spacing=0.001, abserr=0.001, full_output=0, **kwargs):
         """Compute the stopping power along a trajectory.
 
-        :param start_point: [float], starting point in conventional cell fractional coordinates
-        :param lattice_vector: [int], directional of travel in conventional cell coordinates
-        :param velocity: [float], projectile velocity
+        :param start_pos: [float], starting point in conventional cell fractional coordinates
+        :param vdir: [int], directional of travel in conventional cell coordinates
+        :param vmag: [float], magnitude of projectile velocity
+        :param coordinate: [str], specify the coordinate of the start_pos and vdir. could be 'conventional': contravariant coordinate of the conventional unit cell; 'supercell': contravariant of the tddft supercell; 'cartesian': cartesian coordinates
         :param hit_threshold: float, threshold distance for marking when the trajectory passes close enough to an
                 atom to mark the position of closest pass as a discontinuity to the integrator.
-        :param abserr: [flaot], desired level of accuracy
+        :param abserr: [float], desired level of accuracy
         :param full_output: [0 or 1], whether to return the full output from `scipy.integrate.quad`
         :param kwargs: these get passed to `quad`"""
 
+        start_pos, vdir = self._convert_coordinate(start_pos, vdir, coordinate)
+        logging.info(f"Contravariant starting position in conventional unit cell {start_pos}")
+        logging.info(f"Contravariant velocity direction in conventional unit cell {vdir}, velocity magnitude is {vmag} at. u.")
+
         # Create the integration function
-        f = self._create_force_calculator(start_point, lattice_vector, velocity)
+        traj_vec = self._compute_trajectory(vdir)
+        f = self._create_force_calculator(model, featurizers, start_pos, traj_vec, vmag)
 
         # Determine the locations of peaks in the function (near hits)
-        near_points = self._find_near_hits(start_point, lattice_vector, threshold=hit_threshold,
+        near_points = self._find_near_hits(start_pos, traj_vec, threshold=hit_threshold,
                                            estimate_extrema=True)
         
         # Determine the maximum number of intervals such that the maximum number of evaluations is below 
         #   a certain effective spacing
-        traj_length = np.linalg.norm(self._compute_trajectory(lattice_vector))
+        traj_length = np.linalg.norm(traj_vec)
         max_inter = int(max(50, traj_length / max_spacing / 21)) # QUADPACK uses 21 points per interval
 
         # Perform the integration
         return quad(f, 0, 1, epsabs=abserr, full_output=full_output, points=near_points, limit=max_inter, **kwargs)
     
-    def create_force_calculator_given_displacement(self, start_point, traj_dir):
+    def create_force_calculator_given_displacement(self, start_pos, traj_dir):
         """Create a function that computes the stopping force given displacement and current velocity
         
-        :param start_point: [float], starting point in conventional cell fractional coordinates
-        :param traj_dir: [float], directional of travel in cartesian coordiante
+        :param start_pos: [float], starting point in conventional cell fractional coordinates
+        :param traj_dir: [float], directional of travel in cartesian coordinate
         :return: (float, float)->float Takes displacement in distance units and velocity magnitude and computes force
         """
         
@@ -246,11 +319,12 @@ class TrajectoryIntegrator:
         traj_dir = np.divide(traj_dir, np.linalg.norm(traj_dir))
         
         # Convert the start point to Cartesian coordinates
-        start_point = self.conv_strc.lattice.get_cartesian_coords(start_point)
+        start_pos = self.conv_strc.lattice.get_cartesian_coords(start_pos)
+        print("start_pos", start_pos)
         
         # Make the function
         def output(disp, vel_mag, variance = np.array([0, 0, 0])):
-            pos = start_point + disp * traj_dir
+            pos = start_pos + disp * traj_dir
             x = self.featurizers.featurize(pos + variance, vel_mag * traj_dir)
             return self.model.predict(np.array([x]), verbose = 0)[0].item()
         return output
@@ -272,7 +346,7 @@ if __name__ == '__main__':
 
     # Make sure it gets the correct trajectory distance for a [1 1 0] conventional cell lattice vector.
     #  This travels along the face of the FCC conventional cell, and repeats halfway across the face.
-    #  So, the minimum trajectory is [0.5, 0.5, 0] in conventional cell coordiantes
+    #  So, the minimum trajectory is [0.5, 0.5, 0] in conventional cell coordinates
     assert np.isclose(tint._compute_trajectory([1, 1, 0]), [1.76, 1.76, 0]).all()
 
     # Another test: [2 0 0]. This trajectory repeats after [1, 0, 0]

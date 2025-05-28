@@ -1,4 +1,39 @@
+#!/usr/bin/env python
+# coding=utf-8
+from stopping_power_ml.rc import *
 import keras
+import jax
+jax.config.update("jax_enable_x64", True)
+import jax.numpy as jnp 
+
+class Cast(keras.layers.Layer):
+    def __init__(self, dtype, **kwargs):
+        super().__init__(**kwargs)
+        if isinstance(dtype, str):
+            try:
+                self.target_dtype = jnp.dtype(dtype)
+            except TypeError: # Fallback if jnp.dtype() doesn't like the string directly
+                 if dtype.lower() == 'float32': self.target_dtype = jnp.float32
+                 elif dtype.lower() == 'float64': self.target_dtype = jnp.float64
+                 elif dtype.lower() == 'int32': self.target_dtype = jnp.int32
+                 else: raise ValueError(f"Unknown dtype string for JAX: {dtype}")
+        else:
+            self.target_dtype = dtype 
+        logging.info(f"target dtype: {self.target_dtype}")
+
+
+    def call(self, inputs):
+        return jnp.astype(inputs, self.target_dtype)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"dtype": str(self.target_dtype)})
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
 
 def build_fn(input_size=10, dense_layers=(10,10), activation='linear', use_linear_block=True,
             optimizer_options=dict(loss='mean_absolute_error', optimizer='rmsprop', metrics=['mean_absolute_error'])):
@@ -13,8 +48,11 @@ def build_fn(input_size=10, dense_layers=(10,10), activation='linear', use_linea
     Returns:
         (keras.models.Model) a Keras model
     """
+    logging.info(f"kera backend {keras.backend.backend()}")
+    logging.info(f"jax device {jax.devices()}")
+
     # Input layer
-    inputs = keras.layers.Input(shape=(input_size,), name='input')
+    inputs = keras.layers.Input(shape=(input_size,), name='input', dtype = 'float64')
     
     # Make the dense layer
     dense_layer = inputs
@@ -34,3 +72,4 @@ def build_fn(input_size=10, dense_layers=(10,10), activation='linear', use_linea
     model = keras.Model(inputs=inputs, outputs=outputs)
     model.compile(**optimizer_options)
     return model
+
