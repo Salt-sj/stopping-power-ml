@@ -1,9 +1,5 @@
 """Options relating to determining the stopping power over a path"""
-from pymatgen.core.structure import Structure
-
 from stopping_power_ml.rc import *
-from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from pymatgen.io.ase import AseAtomsAdaptor
 from scipy.integrate import quad
 import numpy as np
 from itertools import product
@@ -18,8 +14,10 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
         vdir = np.round(vdir).astype(int)
 
         # Determine the shortest-possible lattice vector
-        g = np.gcd(vdir[0], np.gcd(vdir[1], vdir[2]))
-        min_vec = [p / g for p in vdir]
+        g = np.gcd.reduce(vdir)
+        min_vec = vdir // g
+
+        logging.info(f"Minimum periodic primivitive cell lattice vector is {min_vec}")
 
         # Compute the path length
         return min_vec
@@ -32,14 +30,12 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
         min_proj_len = np.inf
         min_angle = np.inf
         min_R = None
-        min_coeffs = None
 
         for coeffs in product(range(-max_search, max_search), repeat = 3):
             if coeffs == (0, 0, 0):
                 continue
-            R = np.dot(lattice, np.array(coeffs))
-            if (np.linalg.norm(R) < 1e-6):
-                continue
+
+            R = np.array(coeffs) 
 
             proj_len = np.dot(R, vdir_unit)
             angle = calc_angle(R, vdir_unit)
@@ -47,14 +43,12 @@ def compute_min_perodic_vector(lattice, vdir, max_search = 10):
             if (proj_len > 0) and (angle < angle_tol):
                 if (proj_len < min_proj_len):
                     min_proj_len = proj_len
-                    min_coeffs = np.array(coeffs)
-                    min_vec = vdir_unit*min_coeffs
-                    min_angle = angle
                     min_R = R
+                    min_vec = vdir_unit*np.linalg.norm(R)
+                    min_angle = angle
 
         if (min_vec is not None):
-            logging.info(f"The angle between the velocity direction, {vdir}, and the selected vector for minimum periodic distance, {min_R}, is {min_angle} degree.")
-            logging.info(f"Coorespond primivitive cell lattice vector is {min_coeffs}")
+            logging.info(f"The angle between the velocity direction, {vdir}, and the selected primitive cell vector for minimum periodic distance, {min_R}, is {min_angle} degree.")
             return min_vec
         else:
             if (max_search < 60):
@@ -74,6 +68,8 @@ def compute_trajectory(cell, vdir):
 
     # Map the contravariant vector of the conventional cell to that of the primitive cell
     prim_vector = np.dot(cell.conv_to_prim, np.array(vdir))
+
+    logging.info(f"Contravariant velocity vector in primitive cell: {prim_vector}")
 
     min_vec = compute_min_perodic_vector(cell.prim_strc.lattice.matrix, prim_vector)
 
@@ -242,13 +238,13 @@ def _convert_coordinate(cell, start_pos, vdir, coordinate):
     unify the coordinate to the contravariant coordinate of the conventional unit cell
     """
     if (coordinate.lower() == 'cartesian'):
-        start_pos = cell.conv_strc.lattice.get_fractional_coords(start_pos)
-        vdir = cell.conv_strc.lattice.get_fractional_coords(vdir)
+        start_pos = cell.cartesian_to_conventional(start_pos)
+        vdir = cell.cartesian_to_conventional(vdir)
         return start_pos, vdir
 
     elif (coordinate.lower() == 'supercell'):
-        start_pos = cell.simulation_cell.lattice.get_cartesian_coords(start_pos)
-        vdir = cell.simulation_cell.lattice.get_cartesian_coords(vdir)
+        start_pos = cell.simulation_to_cartesian(start_pos)
+        vdir = cell.simulation_to_cartesian(vdir)
         print('cartesian coordinate', start_pos)
         return _convert_coordinate(start_pos, vdir, 'cartesian')
 
