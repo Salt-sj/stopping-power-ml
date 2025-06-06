@@ -115,7 +115,7 @@ class IonIonForce(ProjectileFeaturizer):
 
         # Compute force acting against the direction of particle travel
         my_force = ewald.forces[-1, :]
-        return [-1 * np.dot(my_force, velocity) / np.linalg.norm(velocity) * 0.03674932]
+        return [-1 * np.dot(my_force, velocity) / np.linalg.norm(velocity) * 0.01944688972]
 
     def implementors(self):
         return ['Logan Ward']
